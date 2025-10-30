@@ -5,37 +5,13 @@
 实时检测、选择和跟踪文物，保持目标ID
 """
 
-import inspect
-import sys
 import time
-from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence
 
 import cv2
 import numpy as np
-import torch
 
-# 添加yolov7目录到Python路径
-sys.path.append('yolov7')
-
-try:  # 优先使用本地yolov7工具函数
-    from utils.general import non_max_suppression, scale_coords
-except ModuleNotFoundError:  # pragma: no cover - 兼容子目录结构
-    from yolov7.utils.general import non_max_suppression, scale_coords  # type: ignore
-
-
-CLASS_NAMES: Tuple[str, ...] = (
-    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
-    'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
-    'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack',
-    'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball',
-    'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket',
-    'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
-    'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake',
-    'chair', 'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop',
-    'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
-    'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
-)
+from object_protection.mindyolo_adapter import MindYOLODetector, create_default_detector
 
 EXCLUDED_CLASSES = {
     'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
@@ -140,13 +116,11 @@ class SimpleTracker:
 class VideoRelicTracker:
     def __init__(
         self,
-        model,
-        device,
+        detector: MindYOLODetector,
         confidence_threshold: float = 0.1,
         window_name: Optional[str] = None,
     ):
-        self.model = model
-        self.device = device
+        self.detector = detector
         self.tracker = SimpleTracker(max_disappeared=10)
         self.selected_relics = set()  # 选中的文物ID
         self.relic_detections = []  # 当前帧的文物检测结果
@@ -157,18 +131,19 @@ class VideoRelicTracker:
             else "文物跟踪系统 - 点击选择文物，按Enter确认，按ESC退出"
         )
         self.confidence_threshold = confidence_threshold
+        self.class_names: Sequence[str] = getattr(self.detector, "class_names", ())
 
-        # 创建窗口
-        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        cv2.setMouseCallback(self.window_name, self.mouse_callback)
-
-    def _prepare_image(self, frame: np.ndarray) -> torch.Tensor:
-        """预处理输入图像以便进行模型推理"""
-        resized = cv2.resize(frame, (640, 640))
-        rgb_image = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        tensor = torch.from_numpy(rgb_image.astype(np.float32) / 255.0)
-        tensor = tensor.permute(2, 0, 1).unsqueeze(0)
-        return tensor.to(self.device).float()
+        # 创建窗口（在无图形界面环境下自动降级为无GUI模式）
+        self.gui_enabled = True
+        try:
+            cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+            cv2.setMouseCallback(self.window_name, self.mouse_callback)
+        except cv2.error as exc:
+            self.gui_enabled = False
+            print(
+                "警告: OpenCV 无法创建显示窗口，系统将以无GUI模式运行。"
+                f" 详细信息: {exc}"
+            )
 
     @staticmethod
     def _calculate_antiquity_score(
@@ -234,52 +209,41 @@ class VideoRelicTracker:
     
     def _detect_all_objects(self, frame: np.ndarray) -> List[Dict[str, object]]:
         """运行一次YOLO检测并返回所有检测结果。"""
-        image_tensor = self._prepare_image(frame)
-
-        with torch.no_grad():
-            predictions = self.model(image_tensor)
-
-        if isinstance(predictions, (tuple, list)):
-            predictions = predictions[0]
-
-        detections = non_max_suppression(
-            predictions,
-            conf_thres=self.confidence_threshold,
-        )
-
-        detections_tensor = detections[0]
-        if detections_tensor is None or len(detections_tensor) == 0:
+        try:
+            raw_detections = self.detector.detect(
+                frame,
+                conf_threshold=self.confidence_threshold,
+            )
+        except Exception as exc:  # pragma: no cover - hardware/runtime dependent failure
+            print(f"MindYOLO推理失败: {exc}")
             return []
 
-        detections_tensor = detections_tensor.clone()
-        detections_tensor[:, :4] = scale_coords(
-            image_tensor.shape[2:],
-            detections_tensor[:, :4],
-            frame.shape,
-        ).round()
-
-        all_detections: List[Dict[str, object]] = []
-        for *xyxy, conf, cls in detections_tensor:
-            class_id = int(cls)
-            confidence = float(conf)
-            x1, y1, x2, y2 = map(int, xyxy)
-
-            if class_id < len(CLASS_NAMES):
-                class_name = CLASS_NAMES[class_id]
-            else:
+        detections: List[Dict[str, object]] = []
+        for det in raw_detections:
+            bbox = det.get('bbox', [0, 0, 0, 0])
+            x1, y1, x2, y2 = map(int, bbox)
+            class_id = int(det.get('class_id', -1))
+            class_name = det.get('class_name')
+            if not class_name and 0 <= class_id < len(self.class_names):
+                class_name = str(self.class_names[class_id])
+            if not class_name:
                 class_name = f'class_{class_id}'
 
-            all_detections.append(
+            area = det.get('area')
+            if area is None:
+                area = float(max(0, (x2 - x1) * (y2 - y1)))
+
+            detections.append(
                 {
                     'bbox': [x1, y1, x2, y2],
-                    'confidence': confidence,
+                    'confidence': float(det.get('confidence', 0.0)),
                     'class_id': class_id,
                     'class_name': class_name,
-                    'area': max(0, (x2 - x1) * (y2 - y1)),
+                    'area': float(area),
                 }
             )
 
-        return all_detections
+        return detections
 
     def detect_relics(
         self,
@@ -506,64 +470,6 @@ class VideoRelicTracker:
         cap.release()
         cv2.destroyAllWindows()
 
-def download_yolov7_tiny(destination: Path = Path("yolov7-tiny.pt")) -> Optional[Path]:
-    """下载YOLOv7-tiny预训练模型"""
-    model_url = "https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-tiny.pt"
-
-    if destination.exists():
-        print(f"模型文件已存在: {destination}")
-        return destination
-
-    print("正在下载YOLOv7-tiny模型...")
-    try:
-        import requests
-
-        response = requests.get(model_url, stream=True, timeout=30)
-        response.raise_for_status()
-
-        with destination.open('wb') as file:
-            for chunk in response.iter_content(chunk_size=8192):
-                if not chunk:
-                    continue
-                file.write(chunk)
-
-        print(f"模型下载完成: {destination}")
-        return destination
-    except Exception as e:
-        print(f"下载模型失败: {e}")
-        return None
-
-def load_model(model_path: Path):
-    """加载YOLOv7模型（仅 CPU）"""
-    device = torch.device('cpu')
-    print("使用设备: CPU")
-
-    try:
-        load_kwargs = {"map_location": device}
-        if "weights_only" in inspect.signature(torch.load).parameters:
-            load_kwargs["weights_only"] = False
-
-        try:
-            from torch.serialization import add_safe_globals  # type: ignore
-        except ImportError:  # pragma: no cover - older torch versions
-            add_safe_globals = None
-
-        if add_safe_globals is not None:
-            try:
-                from yolov7.models.yolo import Model as YOLOv7Model  # type: ignore
-            except Exception:
-                YOLOv7Model = None
-            else:
-                add_safe_globals([YOLOv7Model])
-
-        checkpoint = torch.load(model_path, **load_kwargs)
-        model = checkpoint['model'] if isinstance(checkpoint, dict) and 'model' in checkpoint else checkpoint
-        model = model.to(device).float().eval()
-        print("模型加载成功")
-        return model, device
-    except Exception as e:
-        print(f"模型加载失败: {e}")
-        return None, None
 
 def main():
     import argparse
@@ -577,18 +483,11 @@ def main():
     print("=== 视频文物跟踪系统 ===")
     print("实时检测、选择和跟踪文物")
     
-    # 下载模型
-    model_path = download_yolov7_tiny()
-    if model_path is None:
+    detector = create_default_detector(conf_threshold=args.conf)
+    if detector is None:
         return
 
-    # 加载模型
-    model, device = load_model(model_path)
-    if model is None:
-        return
-
-    # 创建跟踪器
-    tracker = VideoRelicTracker(model, device, confidence_threshold=args.conf)
+    tracker = VideoRelicTracker(detector, confidence_threshold=args.conf)
     
     # 处理视频
     try:

@@ -29,11 +29,11 @@ from mediapipe import Image as MPImage, ImageFormat
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
-from object_protection.video_relic_tracking import (
-    SimpleTracker,
-    VideoRelicTracker,
-    download_yolov7_tiny,
-    load_model,
+from object_protection.video_relic_tracking import SimpleTracker, VideoRelicTracker
+from object_protection.mindyolo_adapter import (
+    DEFAULT_CONFIG_PATH,
+    MindYOLODetector,
+    create_default_detector,
 )
 from WebcamPoseDetection.download_model import download_model as download_pose_model
 
@@ -137,15 +137,13 @@ class IntegratedSafetyMonitor(VideoRelicTracker):
 
     def __init__(
         self,
-        model,
-        device,
+        detector: MindYOLODetector,
         *,
         pose_model_path: str,
         confidence_threshold: float = 0.1,
     ):
         super().__init__(
-            model,
-            device,
+            detector,
             confidence_threshold=confidence_threshold,
             window_name="文物安全协同防护系统",
         )
@@ -309,11 +307,16 @@ class IntegratedSafetyMonitor(VideoRelicTracker):
         color: Tuple[int, int, int] = (0, 170, 255),
         duration: float = 2.5,
     ) -> None:
+        if not self.gui_enabled:
+            print(f"[提示] {message}")
+            return
         self.toast_message = message
         self.toast_color = color
         self.toast_expire = time.time() + duration
 
     def _render_toast(self, frame: np.ndarray) -> None:
+        if not self.gui_enabled:
+            return
         if not self.toast_message or time.time() > self.toast_expire:
             return
 
@@ -632,10 +635,15 @@ class IntegratedSafetyMonitor(VideoRelicTracker):
 
         print("=== 文物安全协同防护系统 ===")
         print("操作提示: 点击选中文物，Enter确认，ESC退出，S保存当前帧")
-        if self.workflow_stage != "selection":
-            self._change_stage("selection")
+        if not self.gui_enabled:
+            print("检测到当前环境不支持OpenCV窗口显示，系统将以无GUI模式直接进入实时监控。")
+            if self.workflow_stage != "monitoring":
+                self._change_stage("monitoring")
         else:
-            self._show_toast("请选择需要保护的文物，并按 Enter 进入监控", (0, 170, 255))
+            if self.workflow_stage != "selection":
+                self._change_stage("selection")
+            else:
+                self._show_toast("请选择需要保护的文物，并按 Enter 进入监控", (0, 170, 255))
 
         try:
             while True:
@@ -711,9 +719,12 @@ class IntegratedSafetyMonitor(VideoRelicTracker):
                     self._draw_monitoring_summary(canvas)
                 self._render_toast(canvas)
 
-                cv2.imshow(self.window_name, canvas)
-
-                key = cv2.waitKey(1) & 0xFF
+                if self.gui_enabled:
+                    cv2.imshow(self.window_name, canvas)
+                    key = cv2.waitKey(1) & 0xFF
+                else:
+                    key = -1
+                    time.sleep(0.03)
                 if key == 27:
                     break
                 if key == 13:
@@ -738,7 +749,8 @@ class IntegratedSafetyMonitor(VideoRelicTracker):
         finally:
             cap.release()
             self.pose_helper.close()
-            cv2.destroyAllWindows()
+            if self.gui_enabled:
+                cv2.destroyAllWindows()
 
 
 def parse_args() -> argparse.Namespace:
@@ -746,6 +758,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--source', type=str, default='0', help='视频源(0=摄像头或视频文件路径)')
     parser.add_argument('--conf', type=float, default=0.25, help='YOLO置信度阈值')
     parser.add_argument('--pose-model', type=str, default='models/pose_landmarker_full.task', help='姿态模型路径')
+    parser.add_argument('--iou', type=float, default=0.65, help='MindYOLO NMS IoU阈值')
+    parser.add_argument('--weight', type=str, default=None, help='MindYOLO权重(.ckpt)路径，默认自动下载')
+    parser.add_argument(
+        '--config',
+        type=str,
+        default=str(DEFAULT_CONFIG_PATH),
+        help='MindYOLO配置文件路径',
+    )
+    parser.add_argument(
+        '--device-target',
+        type=str,
+        default='Ascend',
+        help='MindSpore运行设备(Ascend/GPU/CPU)',
+    )
+    parser.add_argument(
+        '--device-id',
+        type=int,
+        default=None,
+        help='Ascend设备ID，默认读取环境变量DEVICE_ID',
+    )
     return parser.parse_args()
 
 
@@ -761,20 +793,31 @@ def main() -> None:
             return
         pose_model_path = Path(downloaded)
 
-    # 准备YOLO模型
-    model_path = download_yolov7_tiny()
-    if model_path is None:
+    weight_path = Path(args.weight).expanduser() if args.weight else None
+    config_path = Path(args.config).expanduser()
+    try:
+        detector = create_default_detector(
+            weight_path=weight_path,
+            config_path=config_path,
+            conf_threshold=args.conf,
+            iou_threshold=args.iou,
+            device_target=args.device_target,
+            device_id=args.device_id,
+        )
+    except FileNotFoundError as exc:
+        print(f"MindYOLO文件缺失: {exc}")
+        return
+    except Exception as exc:  # pragma: no cover - MindSpore runtime dependent
+        print(f"MindYOLO初始化失败: {exc}")
         return
 
-    model, device = load_model(model_path)
-    if model is None or device is None:
+    if detector is None:
         return
 
     video_source: int | str = int(args.source) if args.source.isdigit() else args.source
 
     monitor = IntegratedSafetyMonitor(
-        model,
-        device,
+        detector,
         pose_model_path=str(pose_model_path),
         confidence_threshold=args.conf,
     )
