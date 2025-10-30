@@ -10,6 +10,6 @@ scipy>=1.4.1
 tqdm>=4.41.0
 # Mediapipe Tasks require the legacy protobuf API that ships with 3.20.x.
 # Newer 4.x releases drop FieldDescriptor._default_constructor.
-protobuf>=4.25.3
+protobuf>=3.20.3,<3.21
 matplotlib>=3.2.2
 psutil
