@@ -1,4 +1,4 @@
-# WebcamPoseDetection Structure
+# WebcamPoseDetection 目录结构
 
 ```
 WebcamPoseDetection/
@@ -7,28 +7,24 @@ WebcamPoseDetection/
 ├── webcam_pose_minimal.py
 ├── webcam_pose_simple.py
 ├── test_setup.py
-└── __init__.py (optional)
+└── __init__.py（可选）
 ```
 
-## Code Walkthrough
+## 代码导览
 
 - **`webcam_pose_minimal.py`**  
-  Straightforward script wiring camera capture, MediaPipe inference, and landmark rendering. Ideal for sanity checks.
-
+  将摄像头采集、MediaPipe 推理与关键点绘制串联起来的轻量脚本，适合做快速自检。
 - **`webcam_pose_simple.py`**  
-  Wraps the runtime in `SimpleWebcamPoseDetector`, exposing FPS measurements and predictable error handling for reuse.
-
+  通过 `SimpleWebcamPoseDetector` 封装运行时，提供 FPS 统计和稳定的错误处理，方便在其他模块中直接复用。
 - **`pose33_realtime_optimized.py`**  
-  Splits acquisition and inference across threads using a queue, adds resolution scaling helpers, and exposes CLI switches for deployment scenarios.
-
+  利用队列将采集与推理拆到不同线程，配合分辨率缩放辅助函数，并暴露适合部署场景的命令行开关。
 - **`download_model.py`**  
-  Fetches `pose_landmarker_full.task` to `models/`. Run once before the other scripts if the model is missing.
-
+  将 `pose_landmarker_full.task` 下载至 `models/` 目录。缺少模型时先执行一次即可。
 - **`test_setup.py`**  
-  Optional pre-flight check covering camera availability and dependency versions.
+  可选的起飞前检查：确认摄像头可用并打印依赖版本。
 
-## Link to the Safety Monitor
+## 与安全监控的衔接
 
-- The integrated safety monitor imports `download_model.py` to locate or download the pose task file.
-- Landmark output from any pose runtime can be forwarded directly into `IntegratedSafetyMonitor` without additional adaptation.
-- Dependencies are shared with the rest of the repository through the root `requirements.txt`, ensuring a single environment definition for the final release.
+- 集成安全监控会导入 `download_model.py`，用于定位或拉取姿态模型。
+- 任意姿态脚本输出的关键点都能直接馈入 `IntegratedSafetyMonitor`，无需额外适配层。
+- 全部依赖统一写在根目录 `requirements.txt` 中，最终发布时只需维护这一份环境定义。
