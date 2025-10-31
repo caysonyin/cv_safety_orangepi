@@ -46,6 +46,8 @@ To use the weights fine-tuned on our museum dataset, download them from Google D
 
 - https://drive.google.com/drive/folders/1xjeqz_GMzl5gKie2LgOHv-iQns_v3mU4?usp=share_link
 
+Because of limitations in our conditions, we have not yet conducted tests on actual artifacts. Therefore, we only used non‐transfer‐learned weights and performed tests by substituting a cup for the artifact and a tennis racket for the hazardous object. If you need to test in a real artifact scenario, you can download the weights we have trained, modify the relevant code, and carry out the test.  
+
 ## MindYOLO / MindSpore / CANN Integration
 
 - Ascend hardware is the primary target. CPU (`--device-target CPU`) and GPU fallbacks also work when the corresponding MindSpore wheels are installed.
