@@ -4,56 +4,18 @@
 
 from __future__ import annotations
 
-import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-import inspect
-import subprocess
 import cv2
 import numpy as np
-import torch
 
 from cv_safety_sys.utils import put_text
+from .backends import BackendMetadata, BaseYoloBackend, create_backend
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-YOLO_DIR = REPO_ROOT / "yolov7"
-YOLO_REPO_URL = "https://github.com/WongKinYiu/yolov7.git"
-
-
-def _ensure_yolov7_repo() -> None:
-    """确保 yolov7 源码存在（若缺失尝试自动克隆）。"""
-
-    if YOLO_DIR.exists():
-        return
-
-    print("未检测到 yolov7 源码目录，正在自动克隆...")
-    try:
-        subprocess.run(
-            ["git", "clone", "--depth", "1", YOLO_REPO_URL, str(YOLO_DIR)],
-            check=True,
-            cwd=str(REPO_ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        print("yolov7 仓库克隆完成。")
-    except Exception as exc:  # pragma: no cover - 依赖外部环境
-        raise ModuleNotFoundError(
-            "无法自动克隆 yolov7 仓库，请手动运行：\n"
-            f"  git clone --depth 1 {YOLO_REPO_URL} {YOLO_DIR}"
-        ) from exc
-
-
-_ensure_yolov7_repo()
-if str(YOLO_DIR) not in sys.path:
-    sys.path.insert(0, str(YOLO_DIR))
-
-try:  # 优先使用本地yolov7工具函数
-    from utils.general import non_max_suppression, scale_coords
-except ModuleNotFoundError:  # pragma: no cover - 兼容子目录结构
-    from yolov7.utils.general import non_max_suppression, scale_coords  # type: ignore
 
 
 CLASS_NAMES: Tuple[str, ...] = (
@@ -80,6 +42,141 @@ HIGH_ANTIQUITY_CLASSES = {'bottle', 'wine glass', 'cup', 'bowl', 'vase', 'book',
 MEDIUM_ANTIQUITY_CLASSES = {'teddy bear', 'potted plant'}
 
 DEFAULT_YOLO_MODEL_PATH = REPO_ROOT / "models" / "yolov7-tiny.pt"
+
+
+def _xywh_to_xyxy(boxes: np.ndarray) -> np.ndarray:
+    """Convert ``(x, y, w, h)`` boxes to ``(x1, y1, x2, y2)`` format."""
+
+    converted = boxes.copy()
+    converted[..., 0] = boxes[..., 0] - boxes[..., 2] / 2.0
+    converted[..., 1] = boxes[..., 1] - boxes[..., 3] / 2.0
+    converted[..., 2] = boxes[..., 0] + boxes[..., 2] / 2.0
+    converted[..., 3] = boxes[..., 1] + boxes[..., 3] / 2.0
+    return converted
+
+
+def _clip_boxes(boxes: np.ndarray, width: int, height: int) -> np.ndarray:
+    boxes[..., 0] = np.clip(boxes[..., 0], 0, width - 1)
+    boxes[..., 1] = np.clip(boxes[..., 1], 0, height - 1)
+    boxes[..., 2] = np.clip(boxes[..., 2], 0, width - 1)
+    boxes[..., 3] = np.clip(boxes[..., 3], 0, height - 1)
+    return boxes
+
+
+def _rescale_boxes(boxes: np.ndarray, current_shape: Tuple[int, int], original_shape: Tuple[int, int]) -> np.ndarray:
+    """Scale coordinates from model input size back to the original frame size."""
+
+    gain_w = original_shape[1] / float(current_shape[1])
+    gain_h = original_shape[0] / float(current_shape[0])
+    boxes[..., 0] *= gain_w
+    boxes[..., 2] *= gain_w
+    boxes[..., 1] *= gain_h
+    boxes[..., 3] *= gain_h
+    return _clip_boxes(boxes, original_shape[1], original_shape[0])
+
+
+def _nms(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> List[int]:
+    """Perform Non-Maximum Suppression and return kept indices."""
+
+    if len(boxes) == 0:
+        return []
+
+    x1 = boxes[:, 0]
+    y1 = boxes[:, 1]
+    x2 = boxes[:, 2]
+    y2 = boxes[:, 3]
+
+    areas = (np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)).astype(np.float32)
+    order = scores.argsort()[::-1]
+
+    keep: List[int] = []
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+
+        xx1 = np.maximum(x1[i], x1[order[1:]])
+        yy1 = np.maximum(y1[i], y1[order[1:]])
+        xx2 = np.minimum(x2[i], x2[order[1:]])
+        yy2 = np.minimum(y2[i], y2[order[1:]])
+
+        w = np.maximum(0.0, xx2 - xx1)
+        h = np.maximum(0.0, yy2 - yy1)
+        inter = w * h
+
+        union = areas[i] + areas[order[1:]] - inter
+        iou = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
+
+        inds = np.where(iou <= iou_threshold)[0]
+        order = order[inds + 1]
+
+    return keep
+
+
+def _postprocess_predictions(
+    predictions: np.ndarray,
+    *,
+    confidence_threshold: float,
+    input_shape: Tuple[int, int],
+    original_shape: Tuple[int, int],
+    iou_threshold: float = 0.45,
+) -> List[Dict[str, object]]:
+    """Convert raw YOLO predictions into detection dictionaries."""
+
+    if predictions.ndim != 2:
+        predictions = predictions.reshape(-1, predictions.shape[-1])
+
+    if predictions.size == 0:
+        return []
+
+    boxes = predictions[:, :4]
+    objectness = predictions[:, 4]
+    class_scores = predictions[:, 5:]
+    if class_scores.size == 0:
+        return []
+
+    class_ids = class_scores.argmax(axis=1)
+    class_conf = class_scores[np.arange(class_scores.shape[0]), class_ids]
+    scores = objectness * class_conf
+
+    valid_mask = scores >= confidence_threshold
+    if not np.any(valid_mask):
+        return []
+
+    boxes = boxes[valid_mask]
+    class_ids = class_ids[valid_mask]
+    scores = scores[valid_mask]
+    class_conf = class_conf[valid_mask]
+
+    boxes_xyxy = _xywh_to_xyxy(boxes)
+    boxes_xyxy = _rescale_boxes(boxes_xyxy, input_shape, original_shape)
+
+    detections: List[Dict[str, object]] = []
+    for cls in np.unique(class_ids):
+        cls_mask = class_ids == cls
+        cls_boxes = boxes_xyxy[cls_mask]
+        cls_scores = scores[cls_mask]
+        cls_confs = class_conf[cls_mask]
+        keep_indices = _nms(cls_boxes, cls_scores, iou_threshold)
+
+        for idx in keep_indices:
+            x1, y1, x2, y2 = cls_boxes[idx].round().astype(int).tolist()
+            score = float(cls_scores[idx])
+            confidence = float(cls_confs[idx])
+            class_id = int(cls)
+            class_name = CLASS_NAMES[class_id] if class_id < len(CLASS_NAMES) else f"class_{class_id}"
+            detections.append(
+                {
+                    "bbox": [x1, y1, x2, y2],
+                    "confidence": score,
+                    "class_id": class_id,
+                    "class_name": class_name,
+                    "area": max(0, (x2 - x1) * (y2 - y1)),
+                }
+            )
+
+    return detections
 
 class SimpleTracker:
     """简单的目标跟踪器，基于质心距离的贪心匹配。"""
@@ -241,15 +338,15 @@ class SimpleTracker:
 class VideoRelicTracker:
     def __init__(
         self,
-        model,
-        device,
+        backend: BaseYoloBackend,
+        backend_info: BackendMetadata,
         confidence_threshold: float = 0.1,
         window_name: Optional[str] = None,
         *,
         create_window: bool = True,
     ):
-        self.model = model
-        self.device = device
+        self.backend = backend
+        self.backend_info = backend_info
         self.tracker = SimpleTracker(max_disappeared=10)
         self.selected_relics = set()  # 选中的文物ID
         self.relic_detections = []  # 当前帧的文物检测结果
@@ -268,14 +365,6 @@ class VideoRelicTracker:
         if self._create_window:
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
             cv2.setMouseCallback(self.window_name, self.mouse_callback)
-
-    def _prepare_image(self, frame: np.ndarray) -> torch.Tensor:
-        """预处理输入图像以便进行模型推理"""
-        resized = cv2.resize(frame, (640, 640))
-        rgb_image = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        tensor = torch.from_numpy(rgb_image.astype(np.float32) / 255.0)
-        tensor = tensor.permute(2, 0, 1).unsqueeze(0)
-        return tensor.to(self.device).float()
 
     @staticmethod
     def _calculate_antiquity_score(
@@ -357,52 +446,14 @@ class VideoRelicTracker:
     
     def _detect_all_objects(self, frame: np.ndarray) -> List[Dict[str, object]]:
         """运行一次YOLO检测并返回所有检测结果。"""
-        image_tensor = self._prepare_image(frame)
-
-        with torch.no_grad():
-            predictions = self.model(image_tensor)
-
-        if isinstance(predictions, (tuple, list)):
-            predictions = predictions[0]
-
-        detections = non_max_suppression(
+        predictions = self.backend.forward(frame)
+        detections = _postprocess_predictions(
             predictions,
-            conf_thres=self.confidence_threshold,
+            confidence_threshold=self.confidence_threshold,
+            input_shape=self.backend.input_size,
+            original_shape=frame.shape[:2],
         )
-
-        detections_tensor = detections[0]
-        if detections_tensor is None or len(detections_tensor) == 0:
-            return []
-
-        detections_tensor = detections_tensor.clone()
-        detections_tensor[:, :4] = scale_coords(
-            image_tensor.shape[2:],
-            detections_tensor[:, :4],
-            frame.shape,
-        ).round()
-
-        all_detections: List[Dict[str, object]] = []
-        for *xyxy, conf, cls in detections_tensor:
-            class_id = int(cls)
-            confidence = float(conf)
-            x1, y1, x2, y2 = map(int, xyxy)
-
-            if class_id < len(CLASS_NAMES):
-                class_name = CLASS_NAMES[class_id]
-            else:
-                class_name = f'class_{class_id}'
-
-            all_detections.append(
-                {
-                    'bbox': [x1, y1, x2, y2],
-                    'confidence': confidence,
-                    'class_id': class_id,
-                    'class_name': class_name,
-                    'area': max(0, (x2 - x1) * (y2 - y1)),
-                }
-            )
-
-        return all_detections
+        return detections
 
     def detect_relics(
         self,
@@ -748,6 +799,7 @@ class VideoRelicTracker:
         print("3. 按Enter键确认选择")
         print("4. 按ESC键退出")
         print("5. 按S键保存当前帧")
+        print(f"推理后端: {self.backend_info.name} ({self.backend_info.device})")
         
         frame_count = 0
         
@@ -838,31 +890,24 @@ def download_yolov7_tiny(destination: Path = DEFAULT_YOLO_MODEL_PATH) -> Optiona
         print(f"下载模型失败: {e}")
         return None
 
-def _torch_load_kwargs() -> Dict[str, object]:
-    """Return compatibility kwargs for torch.load."""
+def load_model(
+    model_path: Path,
+    *,
+    backend: str = "torch",
+    device: str = "cpu",
+    device_target: str = "Ascend",
+    device_id: int = 0,
+) -> Tuple[Optional[BaseYoloBackend], Optional[BackendMetadata]]:
+    """根据给定后端加载YOLOv7模型/图并返回推理后端。"""
 
     try:
-        signature = inspect.signature(torch.load)
-        if "weights_only" in signature.parameters:
-            return {"weights_only": False}
-    except (TypeError, ValueError):
-        pass
-    return {}
-
-
-def load_model(model_path: Path):
-    """加载YOLOv7模型（仅 CPU）"""
-    device = torch.device('cpu')
-    print("使用设备: CPU")
-
-    try:
-        checkpoint = torch.load(model_path, map_location=device, **_torch_load_kwargs())
-        model = checkpoint['model'] if isinstance(checkpoint, dict) and 'model' in checkpoint else checkpoint
-        model = model.to(device).float().eval()
-        print("模型加载成功")
-        return model, device
-    except Exception as e:
-        print(f"模型加载失败: {e}")
+        backend_instance, metadata = create_backend(
+            backend, Path(model_path), device=device, device_target=device_target, device_id=device_id
+        )
+        print(f"模型加载成功，后端: {metadata.name}，设备: {metadata.device}")
+        return backend_instance, metadata
+    except Exception as exc:
+        print(f"模型加载失败: {exc}")
         return None, None
 
 def main():
@@ -872,6 +917,10 @@ def main():
     parser.add_argument('--source', type=str, default='0', help='视频源 (0=摄像头, 或视频文件路径)')
     parser.add_argument('--conf', type=float, default=0.1, help='置信度阈值')
     parser.add_argument('--yolo-model', type=str, default=str(DEFAULT_YOLO_MODEL_PATH), help='YOLO 模型路径')
+    parser.add_argument('--backend', type=str, default='torch', choices=['torch', 'mindspore'], help='推理后端 (torch/mindspore)')
+    parser.add_argument('--device', type=str, default='cpu', help='torch 后端使用的设备 (cpu/cuda)')
+    parser.add_argument('--device-target', type=str, default='Ascend', help='MindSpore 后端的 device_target (Ascend/CPU/GPU)')
+    parser.add_argument('--device-id', type=int, default=0, help='Ascend/MindSpore 设备ID')
     
     args = parser.parse_args()
     
@@ -884,12 +933,22 @@ def main():
         return
 
     # 加载模型
-    model, device = load_model(model_path)
-    if model is None:
+    backend_instance, backend_info = load_model(
+        model_path,
+        backend=args.backend,
+        device=args.device,
+        device_target=args.device_target,
+        device_id=args.device_id,
+    )
+    if backend_instance is None or backend_info is None:
         return
 
     # 创建跟踪器
-    tracker = VideoRelicTracker(model, device, confidence_threshold=args.conf)
+    tracker = VideoRelicTracker(
+        backend_instance,
+        backend_info,
+        confidence_threshold=args.conf,
+    )
     
     # 处理视频
     try:

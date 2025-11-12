@@ -34,8 +34,8 @@ from PySide6.QtWidgets import (
 )
 
 from WebcamPoseDetection.download_model import download_model as download_pose_model
-from object_protection.integrated_safety_monitor import IntegratedSafetyMonitor
-from object_protection.video_relic_tracking import download_yolov7_tiny, load_model
+from cv_safety_sys.detection.yolov7_tracker import download_yolov7_tiny, load_model
+from cv_safety_sys.monitoring.integrated_monitor import IntegratedSafetyMonitor
 
 
 class VideoLabel(QLabel):
@@ -419,7 +419,15 @@ class SafetyMonitorWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def prepare_monitor(confidence: float, pose_model: Path | None) -> IntegratedSafetyMonitor:
+def prepare_monitor(
+    confidence: float,
+    pose_model: Path | None,
+    *,
+    backend: str = "torch",
+    device: str = "cpu",
+    device_target: str = "Ascend",
+    device_id: int = 0,
+) -> IntegratedSafetyMonitor:
     pose_model_path = pose_model
     if pose_model_path is None or not pose_model_path.exists():
         downloaded = download_pose_model()
@@ -431,13 +439,19 @@ def prepare_monitor(confidence: float, pose_model: Path | None) -> IntegratedSaf
     if model_path is None:
         raise RuntimeError("无法准备YOLO模型")
 
-    model, device = load_model(model_path)
-    if model is None or device is None:
+    backend_instance, backend_info = load_model(
+        model_path,
+        backend=backend,
+        device=device,
+        device_target=device_target,
+        device_id=device_id,
+    )
+    if backend_instance is None or backend_info is None:
         raise RuntimeError("模型加载失败")
 
     monitor = IntegratedSafetyMonitor(
-        model,
-        device,
+        backend_instance,
+        backend_info,
         pose_model_path=str(pose_model_path),
         confidence_threshold=confidence,
         create_window=False,
@@ -450,6 +464,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--source', type=str, default='0', help='视频源(0=摄像头或视频路径)')
     parser.add_argument('--conf', type=float, default=0.25, help='YOLO 置信度阈值')
     parser.add_argument('--pose-model', type=str, default='models/pose_landmarker_full.task', help='姿态模型路径')
+    parser.add_argument('--backend', type=str, default='torch', choices=['torch', 'mindspore'], help='推理后端')
+    parser.add_argument('--device', type=str, default='cpu', help='torch 后端设备 (cpu/cuda)')
+    parser.add_argument('--device-target', type=str, default='Ascend', help='MindSpore device_target')
+    parser.add_argument('--device-id', type=int, default=0, help='MindSpore/Ascend 设备ID')
     parser.add_argument('--alert-sound', type=str, default=None, help='报警提示音文件路径（可选）')
     return parser.parse_args()
 
@@ -457,7 +475,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     pose_model_path = Path(args.pose_model)
-    monitor = prepare_monitor(args.conf, pose_model_path if pose_model_path.exists() else None)
+    monitor = prepare_monitor(
+        args.conf,
+        pose_model_path if pose_model_path.exists() else None,
+        backend=args.backend,
+        device=args.device,
+        device_target=args.device_target,
+        device_id=args.device_id,
+    )
 
     video_source: int | str = int(args.source) if args.source.isdigit() else args.source
     alert_sound = Path(args.alert_sound) if args.alert_sound else None
