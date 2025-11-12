@@ -11,8 +11,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from cv_safety_sys.inference import BackendMetadata, BaseYoloBackend, create_backend
 from cv_safety_sys.utils import put_text
-from .backends import BackendMetadata, BaseYoloBackend, create_backend
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -41,7 +41,7 @@ EXCLUDED_CLASSES = {
 HIGH_ANTIQUITY_CLASSES = {'bottle', 'wine glass', 'cup', 'bowl', 'vase', 'book', 'clock', 'scissors'}
 MEDIUM_ANTIQUITY_CLASSES = {'teddy bear', 'potted plant'}
 
-DEFAULT_YOLO_MODEL_PATH = REPO_ROOT / "models" / "yolov7-tiny.pt"
+DEFAULT_YOLO_MODEL_PATH = REPO_ROOT / "models" / "yolov7-tiny.mindir"
 
 
 def _xywh_to_xyxy(boxes: np.ndarray) -> np.ndarray:
@@ -862,16 +862,19 @@ class VideoRelicTracker:
         cv2.destroyAllWindows()
 
 def download_yolov7_tiny(destination: Path = DEFAULT_YOLO_MODEL_PATH) -> Optional[Path]:
-    """下载YOLOv7-tiny预训练模型到``models/``目录。"""
+    """下载 Ascend 预编译的 YOLOv7-tiny MindIR 模型。"""
 
-    model_url = "https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-tiny.pt"
+    model_url = (
+        "https://download.mindspore.cn/model_zoo/official/cv/yolov7/"
+        "yolov7_tiny/mindir/yolov7_tiny.mindir"
+    )
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     if destination.exists():
-        print(f"模型文件已存在: {destination}")
+        print(f"MindIR 模型文件已存在: {destination}")
         return destination
 
-    print("正在下载YOLOv7-tiny模型...")
+    print("正在下载 YOLOv7-tiny MindIR 模型...")
     try:
         import requests
 
@@ -887,22 +890,22 @@ def download_yolov7_tiny(destination: Path = DEFAULT_YOLO_MODEL_PATH) -> Optiona
         print(f"模型下载完成: {destination}")
         return destination
     except Exception as e:
-        print(f"下载模型失败: {e}")
+        print(
+            "下载模型失败: {e}. 请参考 MindSpore/CANN 部署文档手动导出 MindIR 模型并放置到 models/ 目录。"
+        )
         return None
 
 def load_model(
     model_path: Path,
     *,
-    backend: str = "torch",
-    device: str = "cpu",
     device_target: str = "Ascend",
     device_id: int = 0,
 ) -> Tuple[Optional[BaseYoloBackend], Optional[BackendMetadata]]:
-    """根据给定后端加载YOLOv7模型/图并返回推理后端。"""
+    """加载 MindSpore YOLOv7 模型并返回推理后端。"""
 
     try:
         backend_instance, metadata = create_backend(
-            backend, Path(model_path), device=device, device_target=device_target, device_id=device_id
+            Path(model_path), device_target=device_target, device_id=device_id
         )
         print(f"模型加载成功，后端: {metadata.name}，设备: {metadata.device}")
         return backend_instance, metadata
@@ -917,8 +920,6 @@ def main():
     parser.add_argument('--source', type=str, default='0', help='视频源 (0=摄像头, 或视频文件路径)')
     parser.add_argument('--conf', type=float, default=0.1, help='置信度阈值')
     parser.add_argument('--yolo-model', type=str, default=str(DEFAULT_YOLO_MODEL_PATH), help='YOLO 模型路径')
-    parser.add_argument('--backend', type=str, default='torch', choices=['torch', 'mindspore'], help='推理后端 (torch/mindspore)')
-    parser.add_argument('--device', type=str, default='cpu', help='torch 后端使用的设备 (cpu/cuda)')
     parser.add_argument('--device-target', type=str, default='Ascend', help='MindSpore 后端的 device_target (Ascend/CPU/GPU)')
     parser.add_argument('--device-id', type=int, default=0, help='Ascend/MindSpore 设备ID')
     
@@ -935,8 +936,6 @@ def main():
     # 加载模型
     backend_instance, backend_info = load_model(
         model_path,
-        backend=args.backend,
-        device=args.device,
         device_target=args.device_target,
         device_id=args.device_id,
     )

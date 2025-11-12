@@ -8,11 +8,12 @@
 | --- | --- | --- |
 | 摄像头采集层 | `examples/pose/*.py`、`run.py` | 拉取本地或 RTSP 视频流，统一输出 `BGR` 帧。 |
 | 姿态感知层 | `cv_safety_sys/pose/*` | 封装 MediaPipe 33 关节点推理、模型下载与坐标变换。 |
-| 目标检测与跟踪层 | `cv_safety_sys/detection/yolov7_tracker.py` | 载入 YOLOv7-tiny、执行类别筛选与质心跟踪。 |
+| MindSpore 推理层 | `cv_safety_sys/inference/*` | 通过 MindSpore Graph 模型加载 MindIR 并完成 CANN 设备配置。 |
+| 目标检测与跟踪层 | `cv_safety_sys/detection/yolov7_tracker.py` | 调用 MindSpore 后端执行 YOLOv7-tiny 推理并完成质心跟踪。 |
 | 安全策略层 | `cv_safety_sys/monitoring/integrated_monitor.py` | 结合姿态与目标结果，计算安全围栏、危险关联和告警等级。 |
 | 展示与交互层 | `cv_safety_sys/ui/qt_monitor.py`、`object_protection/qt_monitor_app.py` | PySide6 桌面 UI、鼠标选取、防护区可视化与历史记录。 |
 
-所有模型文件默认存放在仓库根目录的 `models/` 下，通过 `run.py` 或各子模块的 `download_*` 方法自动拉取，避免重复配置。
+所有模型文件默认存放在仓库根目录的 `models/` 下，通过 `run.py` 或各子模块的 `download_*` 方法自动拉取，避免重复配置。YOLO 推理模型采用 MindIR 格式，首次运行会自动下载 Ascend 预编译版本。
 
 ## 数据流与关键接口
 

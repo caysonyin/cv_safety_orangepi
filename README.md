@@ -4,16 +4,16 @@
 
 ## 技术栈
 
-- **语言与运行环境**：Python 3.10，Ubuntu 22.04 + CPU 基线，可扩展到 GPU。
+- **语言与运行环境**：Python 3.10，Ubuntu 22.04。推理默认运行在 **昇腾 CANN + MindSpore Graph 模式**。
 - **计算机视觉**：
-  - `YOLOv7-tiny`（PyTorch）：检测 `cup/person/tennis racket` 并输出置信度。
+  - `YOLOv7-tiny` MindIR：适配 `mindspore-ascend` 的 3 类文物/危险物检测模型。
   - `MediaPipe Tasks Pose`：33 关键点姿态推理，含模型自动下载器。
   - `OpenCV`：摄像头采集、图像预处理与可视化。
 - **跟踪与策略**：
   - 自研 `SimpleTracker`（质心 + IoU 混合策略）和 `CupFence`/`HazardBinder` 安全逻辑。
-  - `NumPy`/`SciPy`（可选）用于距离计算与向量化操作。
+  - `NumPy`/`SciPy` 用于距离计算与向量化操作。
 - **桌面客户端**：`PySide6` 绘制实时叠层、表单和告警列表；Qt 事件与检测器共享统一接口。
-- **工程工具**：`requirements.txt` 管理依赖，`run.py` 统一调度、下载模型并暴露命令行参数。
+- **工程工具**：`requirements.txt` 管理 Python 依赖，`run.py` 统一调度、下载模型并暴露 MindSpore/CANN 参数。
 
 ## 功能亮点
 
@@ -25,14 +25,15 @@
 ## 快速上手
 
 ```bash
-# 安装依赖
+# 安装 Python 依赖
 pip install -r requirements.txt
 
-# （首次）拉取 YOLOv7 推理所需的官方代码
-git clone --depth 1 https://github.com/WongKinYiu/yolov7.git
+# 安装 MindSpore / CANN（需在昇腾环境预先部署）
+# 例如: pip install mindspore-ascend==2.2.10
+# 并确保已安装匹配版本的 CANN Runtime 与 aclruntime
 
-# 启动完整桌面端，自动下载缺失模型到 ./models
-python run.py --source 0
+# 启动完整桌面端，自动下载 MindIR 模型到 ./models
+python run.py --source 0 --device-target Ascend --device-id 0
 
 # 以 CLI 方式运行安全联动（展品 + 危险物）
 python object_protection/integrated_safety_monitor.py --source 0
@@ -41,7 +42,7 @@ python object_protection/integrated_safety_monitor.py --source 0
 python object_protection/qt_monitor_app.py --source 0 --alert-sound path/to/sound.wav
 ```
 
-`run.py` 会在首次启动时自动下载 MediaPipe 姿态模型与 YOLOv7-tiny 权重到 `models/`。若需要自定义权重，可直接放入该目录并通过 `--yolo-model` 或 `--pose-model` 覆盖路径。
+`run.py` 会在首次启动时自动下载 MediaPipe 姿态模型与 YOLOv7-tiny MindIR 权重到 `models/`。若需要自定义 MindIR，可直接放入该目录并通过 `--yolo-model` 或 `--pose-model` 覆盖路径。如需文物检测的迁移学习权重，可下载我们从开源文物数据集的训练成果 [yolov7tiny.pt](https://drive.google.com/file/d/1w83ZJ-HFex8NhGZyN_RGNQmmzGNDFXZ4/view?usp=share_link) 并替换默认权重。可能需要经过格式转换。
 
 ## 中文字体渲染
 
@@ -61,7 +62,8 @@ cv_safety_sys/
 ├── models/                    # 姿态/检测模型缓存（首次运行自动创建）
 ├── run.py                     # PySide6 客户端统一入口
 ├── src/cv_safety_sys/         # 可复用的核心 Python 包
-│   ├── detection/             # YOLOv7 检测与跟踪模块
+│   ├── detection/             # YOLOv7 MindSpore 检测与跟踪模块
+│   ├── inference/             # CANN/MindSpore 推理后端封装
 │   ├── monitoring/            # 安全集成逻辑
 │   ├── pose/                  # MediaPipe 封装与模型下载器
 │   └── ui/                    # PySide6 应用与渲染
@@ -69,4 +71,4 @@ cv_safety_sys/
 └── docs/                      # 技术文档（架构 / 姿态 / 展品保护）
 ```
 
-详细技术说明请查阅 `docs/system_architecture.md`、`docs/webcam_pose_detection.md` 与 `docs/object_protection.md`。
+详细技术说明请查阅 `docs/system_architecture.md`、`docs/webcam_pose_detection.md`、`docs/object_protection.md`，以及新的 `docs/mindspore_cann_adaptation.md` 部署指南。

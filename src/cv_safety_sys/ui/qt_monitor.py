@@ -644,8 +644,6 @@ def prepare_monitor(
     pose_model: Path | None,
     yolo_model: Path | None = None,
     *,
-    backend: str = "torch",
-    device: str = "cpu",
     device_target: str = "Ascend",
     device_id: int = 0,
 ) -> IntegratedSafetyMonitor:
@@ -667,8 +665,6 @@ def prepare_monitor(
 
     backend_instance, backend_info = load_model(
         model_path,
-        backend=backend,
-        device=device,
         device_target=device_target,
         device_id=device_id,
     )
@@ -691,8 +687,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--conf', type=float, default=0.25, help='YOLO 置信度阈值')
     parser.add_argument('--pose-model', type=str, default=str(DEFAULT_POSE_MODEL_PATH), help='姿态模型路径')
     parser.add_argument('--yolo-model', type=str, default=str(DEFAULT_YOLO_MODEL_PATH), help='YOLO 模型路径')
-    parser.add_argument('--backend', type=str, default='torch', choices=['torch', 'mindspore'], help='推理后端')
-    parser.add_argument('--device', type=str, default='cpu', help='torch 后端设备 (cpu/cuda)')
     parser.add_argument('--device-target', type=str, default='Ascend', help='MindSpore device_target')
     parser.add_argument('--device-id', type=int, default=0, help='MindSpore/Ascend 设备ID')
     parser.add_argument('--alert-sound', type=str, default=None, help='报警提示音文件路径（可选）')
@@ -707,8 +701,6 @@ def main() -> None:
         args.conf,
         pose_model_path if pose_model_path.exists() else None,
         yolo_model_path if yolo_model_path.exists() else None,
-        backend=args.backend,
-        device=args.device,
         device_target=args.device_target,
         device_id=args.device_id,
     )

@@ -18,10 +18,10 @@ object_protection/
 
 ```bash
 # 桌面端（含 PySide6 UI、姿态与告警逻辑）
-python run.py --source 0
+python run.py --source 0 --device-target Ascend --device-id 0
 
 # 仅运行检测/追踪逻辑用于调试
-python -m cv_safety_sys.detection.yolov7_tracker --source 0
+python -m cv_safety_sys.detection.yolov7_tracker --source 0 --device-target Ascend --device-id 0
 ```
 
 常用参数：
@@ -29,9 +29,10 @@ python -m cv_safety_sys.detection.yolov7_tracker --source 0
 - `--source`：摄像头索引或视频文件路径，Qt 版本与 CLI 版本一致。
 - `--conf`：YOLO 置信度阈值，GUI 默认 `0.25`，CLI 默认 `0.1` 以方便调试。
 - `--pose-model` / `--yolo-model`：覆盖默认模型路径（位于 `models/`）。
+- `--device-target` / `--device-id`：MindSpore CANN 运行时配置，默认 `Ascend:0`。
 - `--alert-sound`：Qt 客户端可选的本地告警音。
 
-首次运行会自动下载缺失的模型，若机器无法联网，可手动把模型放入 `models/`。
+首次运行会自动下载缺失的模型（包括 MindIR 权重），若机器无法联网，可手动把模型放入 `models/`。
 
 ## 技术流程
 

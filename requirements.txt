@@ -1,5 +1,5 @@
-# Unified dependency list for both webcam pose detection and object protection subsystems
-# Tested with Python 3.10
+
+# Tested with Python 3.10 on Ubuntu 22.04
 mediapipe>=0.10.0
 opencv-python>=4.8.0
 numpy>=1.21.0,<1.24.0
@@ -11,9 +11,7 @@ tqdm>=4.41.0
 protobuf>=4.21.3
 matplotlib>=3.2.2
 psutil
-thop
-torch>=1.7.0,!=1.12.0
-torchvision>=0.8.1,!=0.13.0
-pandas
-seaborn
 PySide6>=6.5.0
+
+# MindSpore 依赖请根据昇腾平台手动安装
+# aclruntime 由 CANN Runtime 提供

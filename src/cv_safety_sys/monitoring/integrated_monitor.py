@@ -23,7 +23,7 @@ from mediapipe import Image as MPImage, ImageFormat
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
-from cv_safety_sys.detection.backends import BackendMetadata, BaseYoloBackend
+from cv_safety_sys.inference import BackendMetadata, BaseYoloBackend
 from cv_safety_sys.detection.yolov7_tracker import (
     SimpleTracker,
     VideoRelicTracker,
@@ -734,8 +734,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--conf', type=float, default=0.25, help='YOLO置信度阈值')
     parser.add_argument('--pose-model', type=str, default=str(DEFAULT_POSE_MODEL_PATH), help='姿态模型路径')
     parser.add_argument('--yolo-model', type=str, default=str(DEFAULT_YOLO_MODEL_PATH), help='YOLO 模型路径')
-    parser.add_argument('--backend', type=str, default='torch', choices=['torch', 'mindspore'], help='推理后端')
-    parser.add_argument('--device', type=str, default='cpu', help='torch 后端设备 (cpu/cuda)')
     parser.add_argument('--device-target', type=str, default='Ascend', help='MindSpore device_target')
     parser.add_argument('--device-id', type=int, default=0, help='MindSpore/Ascend 设备ID')
     return parser.parse_args()
@@ -760,8 +758,6 @@ def main() -> None:
 
     backend_instance, backend_info = load_model(
         model_path,
-        backend=args.backend,
-        device=args.device,
         device_target=args.device_target,
         device_id=args.device_id,
     )
